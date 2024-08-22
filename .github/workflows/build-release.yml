@@ -6,7 +6,7 @@ on:
     branches: ["master"]
 
 jobs:
-  build-firmware:
+  build-nds-homebrew-tool:
     runs-on: ubuntu-latest
     steps:
       - name: Install dependencies
