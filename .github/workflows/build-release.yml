@@ -10,10 +10,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install dependencies
-        run: sudo apt-get install software-properties-common make
-        run: sudo add-apt-repository --yes ppa:david-davidgf/blocksds-sdk
-        run: sudo apt update
-        run: sudo apt-get install blocksds-sdk
+        run: |
+          sudo apt-get install software-properties-common make
+          sudo add-apt-repository --yes ppa:david-davidgf/blocksds-sdk
+          sudo apt update
+          sudo apt-get install blocksds-sdk
       - name: Checkout repository
         uses: actions/checkout@v4
       - name: Get short SHA
