@@ -1,0 +1,35 @@
+name: superfw flasher tool release
+run-name: Builds the NDS superfw flasher tool
+
+on:
+  push:
+    branches: ["master"]
+
+jobs:
+  build-firmware:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install dependencies
+        run: sudo apt-get install software-properties-common make
+        run: sudo add-apt-repository --yes ppa:david-davidgf/blocksds-sdk
+        run: sudo apt update
+        run: sudo apt-get install blocksds-sdk
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Get short SHA
+        id: slug
+        run: echo "sha8=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
+      - name: Build tool .nds
+        run: |
+          export BLOCKSDS=/opt/blocksds-toolchain/blocksds/
+          export ARM_NONE_EABI_PATH=/opt/blocksds-toolchain/bin/
+          make
+      - name: Upload artifacts
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: superfw-flasher-${{ steps.slug.outputs.sha8 }}
+          path: superfw-flasher.nds
+
+
+
