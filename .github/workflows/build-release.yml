@@ -3,8 +3,10 @@ run-name: Builds the NDS superfw flasher tool
 
 on:
   push:
-    branches: ["master"]
-    tags: *
+    branches:
+      - 'master'
+    tags:
+      - '*'
 
 jobs:
   build-nds-homebrew-tool:
