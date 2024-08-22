@@ -31,6 +31,25 @@ jobs:
         with:
           name: superfw-flasher-${{ steps.slug.outputs.sha8 }}
           path: superfw-flasher.nds
-
+      - name: Create release
+        id: create_release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ github.ref }}
+          release_name: Release ${{ github.ref }}
+          draft: false
+          prerelease: false
+      - name: Upload Release Asset
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./superfw-flasher.nds
+          asset_name: superfw-flasher.nds
+          asset_content_type: application/octet-stream
 
 
