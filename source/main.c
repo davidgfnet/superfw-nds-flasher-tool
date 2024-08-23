@@ -345,7 +345,7 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
 
   struct stat st;
   if (stat(path, &st)) {
-    printf("Could not stat() the selected file\n");
+    printf("Could not stat() the selected file (%s)\n", path);
     return;
   }
   if (st.st_size > 512*1024) {
