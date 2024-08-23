@@ -471,7 +471,7 @@ int main(int argc, char **argv) {
     printf("\x1b[9;1H %s Write flash",   menu_sel == 2 ? ">" : " ");
     printf("\x1b[11;1H %s Test SRAM",    menu_sel == 3 ? ">" : " ");
 
-    printf("\x1b[20;8H Version 0.1");
+    printf("\x1b[20;8H Version 0.2");
 
     swiWaitForVBlank();
     scanKeys();
