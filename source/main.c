@@ -526,13 +526,13 @@ int main(int argc, char **argv) {
             break;
           if (keysDown() & KEY_A) {
             if (l[cur_entry].fn[0]) {
+              char tmp[PATH_MAX];
+              strcpy(tmp, curpath);
+              strcat(tmp, "/");
+              strcat(tmp, l[cur_entry].fn);
+
               if (l[cur_entry].fn[strlen(l[cur_entry].fn)-1] == '/') {
                 // Is a directory, go down the rabbit hole
-                char tmp[PATH_MAX];
-                strcpy(tmp, curpath);
-                strcat(tmp, "/");
-                strcat(tmp, l[cur_entry].fn);
-
                 realpath(tmp, curpath);  // Simplify the path (like "//" or "/../")
 
                 top_entry = cur_entry = 0;
@@ -540,7 +540,7 @@ int main(int argc, char **argv) {
                 l = listdir(curpath, &num_entries);
               }
               else {
-                select_image(l[cur_entry].fn, &tops, &bots);
+                select_image(tmp, &tops, &bots);
                 break; //  Go back
               }
             }
