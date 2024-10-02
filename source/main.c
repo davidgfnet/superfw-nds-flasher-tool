@@ -248,6 +248,30 @@ static bool flash_dump(const char *filename) {
   return true;
 }
 
+static bool rom_dump(const char *filename) {
+  // Map the GBA cart into the ARM9, enter flash mode with write enable.
+  FILE *fd = fopen(filename, "wb");
+  if (!fd)
+    return false;
+
+  char *data = (char*)malloc(512*1024);
+  bool pmode = sysGetCartOwner();
+  sysSetCartOwner(BUS_OWNER_ARM9);
+  set_supercard_mode(MAPPED_SDRAM, true, false);
+
+  for (unsigned i = 0; i < 64; i++) {
+    memcpy(data, (void*)(0x08000000 + i*512*1024), 512*1024);
+    fwrite(data, 1, 512*1024, fd);
+  }
+
+  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  sysSetCartOwner(pmode);
+
+  fclose(fd);
+  free(data);
+  return true;
+}
+
 const struct {
   const char *fw_name;
   uint8_t sha256[16];
@@ -469,9 +493,10 @@ int main(int argc, char **argv) {
     printf("\x1b[5;1H %s Identify cart", menu_sel == 0 ? ">" : " ");
     printf("\x1b[7;1H %s Dump flash",    menu_sel == 1 ? ">" : " ");
     printf("\x1b[9;1H %s Write flash",   menu_sel == 2 ? ">" : " ");
-    printf("\x1b[11;1H %s Test SRAM",    menu_sel == 3 ? ">" : " ");
+    printf("\x1b[11;1H %s Dump ROM",     menu_sel == 3 ? ">" : " ");
+    printf("\x1b[13;1H %s Test SRAM",    menu_sel == 4 ? ">" : " ");
 
-    printf("\x1b[20;8H Version 0.2");
+    printf("\x1b[20;8H Version 0.3");
 
     swiWaitForVBlank();
     scanKeys();
@@ -493,7 +518,7 @@ int main(int argc, char **argv) {
           }
         }
         break;
-      case 3:
+      case 4:
         {
           unsigned numerrs = test_sram();
           consoleSelect(&bots);
@@ -507,6 +532,14 @@ int main(int argc, char **argv) {
         consoleSelect(&bots);
         printf("Starting dump ...\n");
         if (!flash_dump("fat:/sc_flash_dump.bin"))
+          printf("Failed!\n");
+        else
+          printf("Dump complete!\n");
+        break;
+      case 3:
+        consoleSelect(&bots);
+        printf("Starting dump ...\n");
+        if (!rom_dump("fat:/sc_rom_dump.bin"))
           printf("Failed!\n");
         else
           printf("Dump complete!\n");
@@ -575,9 +608,9 @@ int main(int argc, char **argv) {
     if (keysDown() & KEY_START)
       break;
     if (keysDown() & KEY_DOWN)
-      menu_sel = (menu_sel + 1) & 3;
+      menu_sel = (menu_sel + 1) % 4;
     if (keysDown() & KEY_UP)
-      menu_sel = (menu_sel - 1) & 3;
+      menu_sel = (menu_sel + 3) % 4;
   }
 
   return 0;
