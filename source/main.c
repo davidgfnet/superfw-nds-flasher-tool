@@ -45,10 +45,6 @@ static uint32_t addr_perm(uint32_t addr) {
          ((addr & 0x100) >> 5);
 }
 
-static inline bool sysGetCartOwner() {
-  return !(REG_EXMEMCNT & ARM7_OWNS_ROM);
-}
-
 void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_interface) {
   // Bit0: Controls SDRAM vs internal Flash mapping
   // Bit1: Controls whether the SD card interface is mapped into the ROM addresspace.
