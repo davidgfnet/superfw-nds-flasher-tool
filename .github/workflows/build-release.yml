@@ -10,7 +10,7 @@ on:
 
 jobs:
   build-nds-homebrew-tool:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     steps:
       - name: Install dependencies
         run: |

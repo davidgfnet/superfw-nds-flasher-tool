@@ -282,9 +282,11 @@ const struct {
   },
   {
     "Official firmware v1.85 (EN)",
-    {0xc1,0x1d,0x86,0x4d,0x39,0xa4,0x58,0x60,0xa7,0xc5,0xc3,0x4c,0xa6,0x65,0xa9,0xc1}
+    {0x7a,0xdd,0x47,0x26,0x6f,0x52,0x8b,0xb1,0x60,0xe8,0xe1,0x9f,0xc2,0x1b,0xa6,0x4e}
   },
 };
+
+char superfw_str[128];
 
 const char * firmware_ident() {
   // Calculate the Firmware hash, attempt to identify it as a well-known firmware.
@@ -294,6 +296,15 @@ const char * firmware_ident() {
   for (unsigned i = 0; i < sizeof(known_images)/sizeof(known_images[0]); i++) {
     if (!memcmp(hash, known_images[i].sha256, sizeof(known_images[i].sha256)))
       return known_images[i].fw_name;
+  }
+
+  // Identify a valid SuperFW firmware.
+  if (!memcmp((uint8_t*)0x080000F0, "SUPERFW~DAVIDGF", 16)) {
+    unsigned version = *(uint32_t*)0x080000C4;
+    unsigned commtid = *(uint32_t*)0x080000C8;
+    snprintf(superfw_str, sizeof(superfw_str), "SuperFW version %u.%u (%08x)",
+             (version >> 16), (version & 0xFFFF), commtid);
+    return superfw_str;
   }
 
   return NULL;
@@ -325,10 +336,15 @@ typedef struct {
 int fncomp(const void* a, const void* b) {
   const t_fs_entry* ea = (t_fs_entry*)a;
   const t_fs_entry* eb = (t_fs_entry*)b;
+  // Sort directories first
+  if (ea->isdir && !eb->isdir)
+    return -1;
+  if (eb->isdir && !ea->isdir)
+    return 1;
   return strcmp(ea->fn, eb->fn);
 }
 
-t_fs_entry *listdir(const char *path, unsigned *nume) {
+t_fs_entry *listdir(const char *path, int *nume) {
   unsigned cap = 8, nument = 0;
   t_fs_entry *ret = (t_fs_entry*)malloc(cap * sizeof(t_fs_entry));
   ret[0].fn[0] = 0;
@@ -391,7 +407,7 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
 
   uint8_t hash[32];
   sha256sum(fwimg, st.st_size, hash);
-  printf("File loaded with hash: %02x%02x%02x%02x%02x%02x%02x%02x!\n",
+  printf("File loaded (size %d) with hash: %02x%02x%02x%02x%02x%02x%02x%02x!\n", (int)st.st_size,
          hash[0], hash[1], hash[2], hash[3], hash[4], hash[5], hash[6], hash[7]);
 
   if (!valid_header(fwimg)) {
@@ -492,7 +508,7 @@ int main(int argc, char **argv) {
     printf("\x1b[11;1H %s Dump ROM",     menu_sel == 3 ? ">" : " ");
     printf("\x1b[13;1H %s Test SRAM",    menu_sel == 4 ? ">" : " ");
 
-    printf("\x1b[20;8H Version 0.3");
+    printf("\x1b[20;8H Version 0.4");
 
     swiWaitForVBlank();
     scanKeys();
@@ -530,7 +546,7 @@ int main(int argc, char **argv) {
         if (!flash_dump("fat:/sc_flash_dump.bin"))
           printf("Failed!\n");
         else
-          printf("Dump complete!\n");
+          printf("Dump complete! File written: sc_flash_dump.bin\n");
         break;
       case 3:
         consoleSelect(&bots);
@@ -538,13 +554,13 @@ int main(int argc, char **argv) {
         if (!rom_dump("fat:/sc_rom_dump.bin"))
           printf("Failed!\n");
         else
-          printf("Dump complete!\n");
+          printf("Dump complete! File written: sc_rom_dump.bin\n");
         break;
       case 2:
         // Present a small file browser or something.
         char curpath[PATH_MAX] = "fat:/";
-        unsigned cur_entry = 0, top_entry = 0;
-        unsigned num_entries;
+        int cur_entry = 0, top_entry = 0;
+        int num_entries;
         t_fs_entry * l = listdir(curpath, &num_entries);
 
         while (1) {
@@ -576,11 +592,15 @@ int main(int argc, char **argv) {
           }
 
           if (keysDown() & KEY_DOWN)
-            cur_entry = cur_entry + 1 < num_entries ? cur_entry + 1 : cur_entry;
+            cur_entry = MIN(num_entries - 1, cur_entry + 1);
           if (keysDown() & KEY_UP)
-            cur_entry = cur_entry ? cur_entry - 1 : 0;
+            cur_entry = MAX(0, cur_entry - 1);
+          if (keysDown() & KEY_RIGHT)
+            cur_entry = MIN(cur_entry + 8, num_entries - 1);
+          if (keysDown() & KEY_LEFT)
+            cur_entry = MAX(0, cur_entry - 8);
 
-          if ((signed)cur_entry - (signed)top_entry >= 8)
+          if (cur_entry - top_entry >= 8)
             top_entry = cur_entry - 7;
           if (cur_entry < top_entry)
             top_entry = cur_entry;
@@ -604,9 +624,9 @@ int main(int argc, char **argv) {
     if (keysDown() & KEY_START)
       break;
     if (keysDown() & KEY_DOWN)
-      menu_sel = (menu_sel + 1) % 4;
+      menu_sel = (menu_sel + 1) % 5;
     if (keysDown() & KEY_UP)
-      menu_sel = (menu_sel + 3) % 4;
+      menu_sel = (menu_sel + 4) % 5;
   }
 
   return 0;
