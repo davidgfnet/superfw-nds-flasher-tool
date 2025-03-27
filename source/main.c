@@ -69,15 +69,25 @@ static unsigned test_sram() {
 
   // Just write the SRAM with some well-known data, and read it back
   REG_EXMEMCNT |= 0x3;   // Use the slowest possible access time.
-  for (unsigned i = 0; i < 64*1024; i++)
-    SLOT2_SRAM_U8[i] = 0x00;
+
+  set_supercard_mode(MAPPED_FIRMWARE, false, false);
   for (unsigned i = 0; i < 64*1024; i++)
     SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0x5A;
+  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  for (unsigned i = 0; i < 64*1024; i++)
+    SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0xA5;
+
   unsigned numerrs = 0;
+  set_supercard_mode(MAPPED_FIRMWARE, false, false);
   for (unsigned i = 0; i < 64*1024; i++)
     if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0x5A) & 0xFF))
       numerrs++;
+  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  for (unsigned i = 0; i < 64*1024; i++)
+    if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0xA5) & 0xFF))
+      numerrs++;
 
+  set_supercard_mode(MAPPED_FIRMWARE, false, false);
   sysSetCartOwner(pmode);
   return numerrs;
 }
@@ -508,7 +518,7 @@ int main(int argc, char **argv) {
     printf("\x1b[11;1H %s Dump ROM",     menu_sel == 3 ? ">" : " ");
     printf("\x1b[13;1H %s Test SRAM",    menu_sel == 4 ? ">" : " ");
 
-    printf("\x1b[20;8H Version 0.4");
+    printf("\x1b[20;8H Version 0.5");
 
     swiWaitForVBlank();
     scanKeys();

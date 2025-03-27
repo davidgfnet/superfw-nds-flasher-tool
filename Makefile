@@ -8,7 +8,8 @@ BLOCKSDS        ?= /opt/blocksds/core
 
 NAME            := superfw-flasher
 GAME_TITLE      := SuperFW flashing tool
-GAME_SUBTITLE   := SuperFW flashing tool
+GAME_SUBTITLE   := davidgf
+GAME_AUTHOR	?= davidgf.net
 
 include $(BLOCKSDS)/sys/default_makefiles/rom_arm9/Makefile
 
