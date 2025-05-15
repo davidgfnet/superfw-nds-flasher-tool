@@ -33,32 +33,70 @@ void sleep_1ms() {
 // The permutation seems to only apply to the 9 LSB.
 // In general we do not care unless we need to send a specifc address or play
 // with sector/page erase.
-static uint32_t addr_perm(uint32_t addr) {
-  return (addr & 0xFFFFFE02) |
-         ((addr & 0x001) << 7) | 
-         ((addr & 0x004) << 4) | 
-         ((addr & 0x008) << 2) | 
-         ((addr & 0x010) >> 4) | 
-         ((addr & 0x020) >> 3) | 
-         ((addr & 0x040) << 2) | 
-         ((addr & 0x080) >> 3) | 
-         ((addr & 0x100) >> 5);
+// The supercard lite does not do any of this crazy mapping :)
+#ifdef SUPERCARD_LITE
+  static uint32_t addr_perm(uint32_t addr) {
+    return addr;
+  }
+#else
+  static uint32_t addr_perm(uint32_t addr) {
+    return (addr & 0xFFFFFE02) |
+           ((addr & 0x001) << 7) |
+           ((addr & 0x004) << 4) |
+           ((addr & 0x008) << 2) |
+           ((addr & 0x010) >> 4) |
+           ((addr & 0x020) >> 3) |
+           ((addr & 0x040) << 2) |
+           ((addr & 0x080) >> 3) |
+           ((addr & 0x100) >> 5);
+  }
+#endif
+
+#define SUPERCARD_LITE_FLASHWR        0x1510
+
+void write_supercard_modereg(uint16_t value) {
+  // Write magic value and then the mode value (twice) to trigger the mode change.
+  // Using asm to ensure we place a proper memory barrier.
+  const uint16_t MODESWITCH_MAGIC = 0xA55A;
+  uint32_t REG_SC_MODE_REG_ADDR = 0x09FFFFFE;
+
+  asm volatile (
+    "strh %1, [%0]\n"
+    "strh %1, [%0]\n"
+    "strh %2, [%0]\n"
+    "strh %2, [%0]\n"
+    :: "l"(REG_SC_MODE_REG_ADDR),
+       "l"(MODESWITCH_MAGIC),
+       "l"(value)
+    : "memory");
 }
 
 void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_interface) {
   // Bit0: Controls SDRAM vs internal Flash mapping
   // Bit1: Controls whether the SD card interface is mapped into the ROM addresspace.
-  // Bit2: Controls read-only/write access.
+  // Bit2: Controls read-only/write access. Doubles as SRAM bank selector!
   uint16_t value = mapped_area | (sdcard_interface ? 0x2 : 0x0) | (write_access ? 0x4 : 0x0);
-  const uint16_t MODESWITCH_MAGIC = 0xA55A;
-  volatile uint16_t *REG_SD_MODE = (volatile uint16_t*)(0x09FFFFFE);
 
-  // Write magic value and then the mode value (twice) to trigger the mode change.
-  *REG_SD_MODE = MODESWITCH_MAGIC;
-  *REG_SD_MODE = MODESWITCH_MAGIC;
-  *REG_SD_MODE = value;
-  *REG_SD_MODE = value;
+  write_supercard_modereg(value);
 }
+
+
+#ifdef SUPERCARD_LITE
+  void enable_sc_flash() {
+    write_supercard_modereg(0x1510);
+  }
+  void disable_sc_flash() {
+    write_supercard_modereg(0);
+  }
+#else
+  void enable_sc_flash() {
+    set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  }
+  void disable_sc_flash() {
+    set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  }
+#endif
+
 
 #define SLOT2_BASE_U16 ((volatile uint16_t*)(0x08000000))
 #define SLOT2_SRAM_U8  ((volatile uint8_t*)( 0x0A000000))
@@ -96,7 +134,7 @@ static uint32_t flash_ident() {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  enable_sc_flash();
 
   REG_EXMEMCNT |= 0xF;  // use slow mode
   for (unsigned i = 0; i < 32; i++)
@@ -112,10 +150,37 @@ static uint32_t flash_ident() {
   for (unsigned i = 0; i < 32; i++)
     SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  disable_sc_flash();
   sysSetCartOwner(pmode);
 
   return ret;
+}
+
+static void flash_prot_dump(bool prot[128]) {
+  bool pmode = sysGetCartOwner();
+  sysSetCartOwner(BUS_OWNER_ARM9);
+  enable_sc_flash();
+
+  for (unsigned sa = 0; sa < 128; sa++) {
+
+    REG_EXMEMCNT |= 0xF;  // use slow mode
+    for (unsigned i = 0; i < 32; i++)
+      SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+
+    SLOT2_BASE_U16[addr_perm(0x555)] = 0x00AA;
+    SLOT2_BASE_U16[addr_perm(0x2AA)] = 0x0055;
+    SLOT2_BASE_U16[addr_perm(0x555)] = 0x0090;
+
+    unsigned protv = SLOT2_BASE_U16[addr_perm(0x002 | (sa << 11))];
+
+    for (unsigned i = 0; i < 32; i++)
+      SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+
+    prot[sa] = protv & 1;
+  }
+
+  disable_sc_flash();
+  sysSetCartOwner(pmode);
 }
 
 // Performs a flash full-chip erase.
@@ -123,7 +188,7 @@ static bool flash_erase() {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  enable_sc_flash();
 
   REG_EXMEMCNT |= 0xF;  // use slow mode
   for (unsigned i = 0; i < 32; i++)
@@ -147,28 +212,34 @@ static bool flash_erase() {
   for (unsigned i = 0; i < 32; i++)
     SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  disable_sc_flash();
   sysSetCartOwner(pmode);
 
   return retok;
 }
 
 // Checks that the erase operation actually erased the memory.
-static bool flash_erase_check() {
+static bool flash_erase_check(bool prot[128]) {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  enable_sc_flash();
   REG_EXMEMCNT |= 0xF;  // use slow mode
 
   bool errf = false;
-  for (unsigned i = 0; i < 512*1024; i+= 2) {
-    errf = (SLOT2_BASE_U16[i / 2] != 0xFFFF);
-    if (errf)
-      break;
+  for (unsigned sa = 0; sa < 128; sa++) {
+    if (prot[sa])
+      continue;  // Protected sector, won't be clear.
+
+    for (unsigned i = 0; i < 4096; i+= 2) {
+      unsigned addr = sa * 4096 + i;
+      errf = (SLOT2_BASE_U16[addr / 2] != 0xFFFF);
+      if (errf)
+        break;
+    }
   }
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  disable_sc_flash();
   sysSetCartOwner(pmode);
 
   return errf;
@@ -180,7 +251,7 @@ static bool flash_write(const uint8_t *buf, unsigned size) {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  enable_sc_flash();
   REG_EXMEMCNT |= 0xF;  // use slow mode
 
   SLOT2_BASE_U16[0] = 0x00F0;   // Force IDLE
@@ -211,7 +282,7 @@ static bool flash_write(const uint8_t *buf, unsigned size) {
     }
   }
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  disable_sc_flash();
   sysSetCartOwner(pmode);
 
   return ok;
@@ -221,11 +292,11 @@ static bool flash_validate(const uint8_t *fwimg, unsigned fwsize) {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  enable_sc_flash();
 
   return (!memcmp(fwimg, (uint8_t*)0x08000000, fwsize));
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  disable_sc_flash();
   sysSetCartOwner(pmode);
 }
 
@@ -233,12 +304,12 @@ static bool flash_dump(const char *filename) {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  enable_sc_flash();
 
   char *data = (char*)malloc(512*1024);
   memcpy(data, (void*)0x08000000, 512*1024);
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  disable_sc_flash();
   sysSetCartOwner(pmode);
 
   FILE *fd = fopen(filename, "wb");
@@ -292,7 +363,15 @@ const struct {
   },
   {
     "Official firmware v1.85 (EN)",
-    {0x7a,0xdd,0x47,0x26,0x6f,0x52,0x8b,0xb1,0x60,0xe8,0xe1,0x9f,0xc2,0x1b,0xa6,0x4e}
+    {0x58,0xb0,0xd7,0xcf,0x24,0xa7,0x6a,0xed,0x79,0xa2,0x66,0xfc,0xa0,0x73,0x0b,0x5c}
+  },
+  {
+    "Official firmware (Lite) v1.85 (CN)",
+    {0xc5,0x19,0xf5,0xd4,0x6f,0xb4,0xee,0x1d,0xa1,0x87,0x13,0x48,0xab,0xeb,0x33,0xd2}
+  },
+  {
+    "Official firmware (Lite) v1.85 (EN)",
+    {0x6f,0xef,0xf0,0x6a,0xcf,0xcf,0x2d,0x94,0x36,0x3a,0x51,0x7c,0xd4,0x5e,0xfc,0x59}
   },
 };
 
@@ -389,6 +468,25 @@ t_fs_entry *listdir(const char *path, int *nume) {
 void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
   consoleSelect(bots);
 
+  // Figure out how many unprotected sectors are there
+  bool prot[128] = {0};
+
+  #ifdef SUPERCARD_LITE
+    flash_prot_dump(prot);
+  #endif
+
+  unsigned ucnt = 0, ccnt = 0;
+  for (unsigned i = 0; i < 128; i++)
+    if (!prot[i])
+      ucnt++;
+  for (unsigned i = 0; i < 128; i++)
+    if (!prot[i])
+      ccnt++;
+    else
+      break;
+
+  printf("The flash has %d KiB of usable space (%d total unlocked blocks)\n", ccnt, ucnt);
+
   struct stat st;
   if (stat(path, &st)) {
     printf("Could not stat() the selected file (%s)\n", path);
@@ -396,13 +494,17 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
   }
   if (st.st_size > 512*1024) {
     printf("The file is bigger than 512KiB!\n");
-    return;  
+    return;
+  }
+  if (st.st_size > ccnt*4096) {
+    printf("The file is bigger than %dKiB (maximum contiguous free space)!\n", ccnt*4096);
+    return;
   }
 
   FILE *fd = fopen(path, "rb");
   if (!fd) {
     printf("Could not open the selected file!\n");
-    return;  
+    return;
   }
 
   printf("Reading file ...\n");
@@ -458,7 +560,9 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
       }
       printf("\x1b[32;1mErase operation complete\x1b[37;1m\n");
 
-      if (flash_erase_check()) {
+      printf("Verifying erase operation (%d sectors) ...\n", ucnt);
+
+      if (flash_erase_check(prot)) {
         printf("\x1b[31;1mErase validation failed!\x1b[37;1m\n");
         break;
       }
@@ -512,13 +616,19 @@ int main(int argc, char **argv) {
     printf("\x1b[1;5HSuperFW flashing tool");
     printf("\x1b[37;1m");
 
-    printf("\x1b[5;1H %s Identify cart", menu_sel == 0 ? ">" : " ");
-    printf("\x1b[7;1H %s Dump flash",    menu_sel == 1 ? ">" : " ");
-    printf("\x1b[9;1H %s Write flash",   menu_sel == 2 ? ">" : " ");
-    printf("\x1b[11;1H %s Dump ROM",     menu_sel == 3 ? ">" : " ");
-    printf("\x1b[13;1H %s Test SRAM",    menu_sel == 4 ? ">" : " ");
+    printf("\x1b[5;1H %s Identify cart",  menu_sel == 0 ? ">" : " ");
+    printf("\x1b[7;1H %s Dump flash",     menu_sel == 1 ? ">" : " ");
+    printf("\x1b[9;1H %s Write flash",    menu_sel == 2 ? ">" : " ");
+    printf("\x1b[11;1H %s Dump ROM",      menu_sel == 3 ? ">" : " ");
+    printf("\x1b[13;1H %s Test SRAM",     menu_sel == 4 ? ">" : " ");
+    printf("\x1b[15;1H %s Protbits dump", menu_sel == 5 ? ">" : " ");
 
-    printf("\x1b[20;8H Version 0.5");
+    printf("\x1b[20;8H Version 0.6");
+    #ifdef SUPERCARD_LITE
+      printf("\x1b[22;6H SUPERCARD LITE");
+    #else
+      printf("\x1b[22;8H SUPERCARD SD");
+    #endif
 
     swiWaitForVBlank();
     scanKeys();
@@ -538,6 +648,17 @@ int main(int argc, char **argv) {
             else
               printf("Unknown firmware detected!\n");
           }
+        }
+        break;
+      case 5:
+        {
+          bool prot[128];
+          consoleSelect(&bots);
+          flash_prot_dump(prot);
+
+          for (unsigned i = 0; i < 128; i++)
+            printf("%d ", prot[i] ? 1 : 0);
+          printf("\n");
         }
         break;
       case 4:
@@ -628,15 +749,15 @@ int main(int argc, char **argv) {
         }
         free(l);
         break;
-      };    
+      };
     }
 
     if (keysDown() & KEY_START)
       break;
     if (keysDown() & KEY_DOWN)
-      menu_sel = (menu_sel + 1) % 5;
+      menu_sel = (menu_sel + 1) % 6;
     if (keysDown() & KEY_UP)
-      menu_sel = (menu_sel + 4) % 5;
+      menu_sel = (menu_sel + 5) % 6;
   }
 
   return 0;
