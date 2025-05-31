@@ -22,6 +22,23 @@
 #define MAX(a, b)   ((a) < (b) ? (b) : (a))
 #define MIN(a, b)   ((a) > (b) ? (b) : (a))
 
+typedef enum {
+    SC_SD = 0x00,
+    SC_LITE = 0x01,
+    SC_RUMBLE = (0x10 | SC_LITE),
+    SC_UNK = 0xEE
+} SUPERCARD_TYPE;
+SUPERCARD_TYPE SuperCardType = SC_UNK;
+
+typedef enum{
+    IDENTIFY_CART,
+    DUMP_FLASH,
+    WRITE_FLASH,
+    DUMP_ROM,
+    TEST_SRAM,
+    PROTBITS_DUMP
+} MENU_SEL;
+
 void sha256sum(const uint8_t *inbuffer, unsigned length, void *output);
 
 void sleep_1ms() {
@@ -34,23 +51,25 @@ void sleep_1ms() {
 // In general we do not care unless we need to send a specifc address or play
 // with sector/page erase.
 // The supercard lite does not do any of this crazy mapping :)
-#ifdef SUPERCARD_LITE
-  static uint32_t addr_perm(uint32_t addr) {
-    return addr;
+static uint32_t addr_perm(uint32_t addr) {
+  switch(SuperCardType){
+    case SC_SD:
+      return (addr & 0xFFFFFE02) |
+            ((addr & 0x001) << 7) |
+            ((addr & 0x004) << 4) |
+            ((addr & 0x008) << 2) |
+            ((addr & 0x010) >> 4) |
+            ((addr & 0x020) >> 3) |
+            ((addr & 0x040) << 2) |
+            ((addr & 0x080) >> 3) |
+            ((addr & 0x100) >> 5);
+    case SC_LITE:
+    case SC_RUMBLE:
+      return addr;
+    default:
+      return addr;
   }
-#else
-  static uint32_t addr_perm(uint32_t addr) {
-    return (addr & 0xFFFFFE02) |
-           ((addr & 0x001) << 7) |
-           ((addr & 0x004) << 4) |
-           ((addr & 0x008) << 2) |
-           ((addr & 0x010) >> 4) |
-           ((addr & 0x020) >> 3) |
-           ((addr & 0x040) << 2) |
-           ((addr & 0x080) >> 3) |
-           ((addr & 0x100) >> 5);
-  }
-#endif
+}
 
 #define SUPERCARD_LITE_FLASHWR        0x1510
 
@@ -80,22 +99,49 @@ void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_int
   write_supercard_modereg(value);
 }
 
+SUPERCARD_TYPE detect_supercard_type() {
+    set_supercard_mode(MAPPED_FIRMWARE, false, true);
+    u16 val = *(vu16*)0x09800000;
+    switch(val & 0xE300) {
+        case 0xA000:
+            return SC_LITE;
+        case 0xC000:
+            return SC_RUMBLE;
+        case 0xE000:
+            return SC_SD;
+        default:
+            return SC_UNK;
+    }
+}
 
-#ifdef SUPERCARD_LITE
-  void enable_sc_flash() {
-    write_supercard_modereg(0x1510);
+void enable_sc_flash() {
+  switch(SuperCardType){
+    case SC_SD:
+      set_supercard_mode(MAPPED_FIRMWARE, true, false);
+      break;
+    case SC_LITE:
+    case SC_RUMBLE:
+      write_supercard_modereg(0x1510);
+      break;
+    default:
+      set_supercard_mode(MAPPED_FIRMWARE, true, false);
+      break;
   }
-  void disable_sc_flash() {
-    write_supercard_modereg(0);
+}
+void disable_sc_flash() {
+  switch(SuperCardType){
+    case SC_SD:
+      set_supercard_mode(MAPPED_FIRMWARE, false, false);
+      break;
+    case SC_LITE:
+    case SC_RUMBLE:
+      write_supercard_modereg(0);
+      break;
+    default:
+      set_supercard_mode(MAPPED_FIRMWARE, false, false);
+      break;
   }
-#else
-  void enable_sc_flash() {
-    set_supercard_mode(MAPPED_FIRMWARE, true, false);
-  }
-  void disable_sc_flash() {
-    set_supercard_mode(MAPPED_FIRMWARE, false, false);
-  }
-#endif
+}
 
 
 #define SLOT2_BASE_U16 ((volatile uint16_t*)(0x08000000))
@@ -471,9 +517,8 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
   // Figure out how many unprotected sectors are there
   bool prot[128] = {0};
 
-  #ifdef SUPERCARD_LITE
+  if(SuperCardType == SC_LITE)
     flash_prot_dump(prot);
-  #endif
 
   unsigned ucnt = 0, ccnt = 0;
   for (unsigned i = 0; i < 128; i++)
@@ -624,33 +669,59 @@ int main(int argc, char **argv) {
     printf("\x1b[15;1H %s Protbits dump", menu_sel == 5 ? ">" : " ");
 
     printf("\x1b[20;8H Version 0.6");
-    #ifdef SUPERCARD_LITE
-      printf("\x1b[22;6H SUPERCARD LITE");
-    #else
-      printf("\x1b[22;8H SUPERCARD SD");
-    #endif
+
+    SuperCardType = detect_supercard_type();
+    switch (SuperCardType){
+      case SC_SD:
+        printf("\x1b[22;8H SUPERCARD SD");
+        break;
+      case SC_LITE:
+        printf("\x1b[22;6H SUPERCARD LITE");
+        break;
+      case SC_RUMBLE:
+        printf("\x1b[22;5H SUPERCARD RUMBLE");
+        break;
+      default:
+        printf("\x1b[22;10H UNKNOWN");
+        break;
+    }
 
     swiWaitForVBlank();
     scanKeys();
 
     if (keysDown() & KEY_A) {
       switch (menu_sel) {
-      case 0:
+      case IDENTIFY_CART:
         consoleSelect(&bots);
-        printf("Identified flash device ID as %08lx\n", flash_ident());
+        printf("Identified flash device ID as:\n %08lx\n", flash_ident());
         {
           const char *fwname = firmware_ident();
           if (fwname)
-            printf("Identified the firmware as %s\n", fwname);
+            printf("Identified the firmware as:\n %s\n", fwname);
           else {
             if (!valid_header((uint8_t*)0x08000000))
               printf("Invalid firmware header detected!\n");
             else
               printf("Unknown firmware detected!\n");
           }
+          printf("Identified SuperCard type as:\n ");
+          switch (SuperCardType){
+            case SC_SD:
+              printf("SUPERCARD SD\n");
+              break;
+            case SC_LITE:
+              printf("SUPERCARD LITE\n");
+              break;
+            case SC_RUMBLE:
+              printf("SUPERCARD RUMBLE\n");
+              break;
+            default:
+              printf("UNKNOWN\n");
+              break;
+          }
         }
         break;
-      case 5:
+      case PROTBITS_DUMP:
         {
           bool prot[128];
           consoleSelect(&bots);
@@ -661,7 +732,7 @@ int main(int argc, char **argv) {
           printf("\n");
         }
         break;
-      case 4:
+      case TEST_SRAM:
         {
           unsigned numerrs = test_sram();
           consoleSelect(&bots);
@@ -671,7 +742,7 @@ int main(int argc, char **argv) {
             printf("\x1b[32;1mSRAM integrity check passed!\x1b[37;1m\n");
         }
         break;
-      case 1:
+      case DUMP_FLASH:
         consoleSelect(&bots);
         printf("Starting dump ...\n");
         if (!flash_dump("fat:/sc_flash_dump.bin"))
@@ -679,7 +750,7 @@ int main(int argc, char **argv) {
         else
           printf("Dump complete! File written: sc_flash_dump.bin\n");
         break;
-      case 3:
+      case DUMP_ROM:
         consoleSelect(&bots);
         printf("Starting dump ...\n");
         if (!rom_dump("fat:/sc_rom_dump.bin"))
@@ -687,7 +758,7 @@ int main(int argc, char **argv) {
         else
           printf("Dump complete! File written: sc_rom_dump.bin\n");
         break;
-      case 2:
+      case WRITE_FLASH:
         // Present a small file browser or something.
         char curpath[PATH_MAX] = "fat:/";
         int cur_entry = 0, top_entry = 0;

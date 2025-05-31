@@ -23,22 +23,17 @@ jobs:
       - name: Get short SHA
         id: slug
         run: echo "sha8=$(echo ${GITHUB_SHA} | cut -c1-8)" >> $GITHUB_OUTPUT
-      - name: Build tool .nds (SD)
+      - name: Build tool .nds
         run: |
           export BLOCKSDS=/opt/blocksds-toolchain/blocksds/
           export ARM_NONE_EABI_PATH=/opt/blocksds-toolchain/bin/
-          make BOARD=sd clean && make BOARD=sd all
-      - name: Build tool .nds (Lite)
-        run: |
-          export BLOCKSDS=/opt/blocksds-toolchain/blocksds/
-          export ARM_NONE_EABI_PATH=/opt/blocksds-toolchain/bin/
-          make BOARD=lite clean && make BOARD=lite all
+          make
       - name: Upload artifacts
         if: ${{ success() }}
         uses: actions/upload-artifact@v4
         with:
           name: superfw-flasher-${{ steps.slug.outputs.sha8 }}
-          path: superfw-flasher-*.nds
+          path: superfw-flasher.nds
       - name: Create release
         id: create_release
         if: startsWith(github.ref, 'refs/tags/')
@@ -50,25 +45,15 @@ jobs:
           release_name: Release ${{ github.ref }}
           draft: false
           prerelease: false
-      - name: Upload Release Asset (Board SD)
+      - name: Upload Release Asset
         uses: actions/upload-release-asset@v1
         if: startsWith(github.ref, 'refs/tags/')
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./superfw-flasher-sd.nds
-          asset_name: superfw-flasher-sd.nds
-          asset_content_type: application/octet-stream
-      - name: Upload Release Asset (Board Lite)
-        uses: actions/upload-release-asset@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: ./superfw-flasher-lite.nds
-          asset_name: superfw-flasher-lite.nds
+          asset_path: ./superfw-flasher.nds
+          asset_name: superfw-flasher.nds
           asset_content_type: application/octet-stream
 
 
