@@ -586,6 +586,10 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
   free(fwimg);
 }
 
+void key_handler() {
+  lcdSwap();
+}
+
 int main(int argc, char **argv) {
   PrintConsole tops, bots;
 
@@ -596,6 +600,10 @@ int main(int argc, char **argv) {
 
   consoleInit(&tops, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, true, true);
   consoleInit(&bots, 3, BgType_Text4bpp, BgSize_T_256x256, 31, 0, false, true);
+
+  irqSet(IRQ_KEYS, key_handler);
+  irqEnable(IRQ_KEYS);
+  REG_KEYCNT = KEY_SELECT | (1 << 14);
 
   // Init FAT filesystem and slot2 ...
   consoleSelect(&bots);
