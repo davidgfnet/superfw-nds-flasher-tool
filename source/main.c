@@ -22,6 +22,28 @@
 #define MAX(a, b)   ((a) < (b) ? (b) : (a))
 #define MIN(a, b)   ((a) > (b) ? (b) : (a))
 
+typedef struct {
+  uint32_t size;         // Size in bytes
+  uint32_t blkwrite;     // Buffer writing capabilities (zero means disabled)
+  uint32_t regioncnt;    // Erase region count (ideally 1, or perhaps 0)
+  struct {
+    uint32_t blksize;    // Block size in bytes
+    uint32_t blkcount;   // Number of blocks
+  } regions[256];
+} t_flash_info;
+extern t_flash_info flashinfo;
+
+enum {
+  SupercardSD,
+  SupercardLite,
+  Superchis,
+  MAXDEVICES
+};
+unsigned devtype = SupercardSD;
+const char *devnames[] = { "Supercard SD", "Supercard Lite", "SuperChis" };
+const unsigned flash_fwsizes[] = { 512*1024, 496*1024, 2*1024*1024 };
+const unsigned flash_erase_timeout[] = { 60, 60, 300 * 8 };
+
 void sha256sum(const uint8_t *inbuffer, unsigned length, void *output);
 
 void sleep_1ms() {
@@ -34,12 +56,10 @@ void sleep_1ms() {
 // In general we do not care unless we need to send a specifc address or play
 // with sector/page erase.
 // The supercard lite does not do any of this crazy mapping :)
-#ifdef SUPERCARD_LITE
-  static uint32_t addr_perm(uint32_t addr) {
+static uint32_t addr_perm(uint32_t addr) {
+  if (devtype != SupercardSD)
     return addr;
-  }
-#else
-  static uint32_t addr_perm(uint32_t addr) {
+  else
     return (addr & 0xFFFFFE02) |
            ((addr & 0x001) << 7) |
            ((addr & 0x004) << 4) |
@@ -49,8 +69,8 @@ void sleep_1ms() {
            ((addr & 0x040) << 2) |
            ((addr & 0x080) >> 3) |
            ((addr & 0x100) >> 5);
-  }
-#endif
+}
+
 
 #define SUPERCARD_LITE_FLASHWR        0x1510
 
@@ -71,6 +91,38 @@ void write_supercard_modereg(uint16_t value) {
     : "memory");
 }
 
+void reset_superchis_flashmap() {
+  const uint16_t MODESWITCH_MAGIC = 0xA55A;
+  uint32_t REG_SC_MODE_REG_ADDR = 0x09FFFFFE;
+
+  for (unsigned i = 0; i < 8; i++) {
+    asm volatile (
+      "strh %1, [%0]\n"
+      "strh %1, [%0]\n"
+      "strh %2, [%0]\n"
+      "nop; nop;"
+      :: "l"(REG_SC_MODE_REG_ADDR),
+         "l"(MODESWITCH_MAGIC),
+         "l"(0x200)
+      : "memory");
+  }
+}
+
+void set_superchis_bankreg(unsigned bankn) {
+  const uint16_t MODESWITCH_MAGIC = 0xA55A;
+  uint32_t REG_SC_MODE_REG_ADDR = 0x09FFFFFE;
+
+  asm volatile (
+    "strh %1, [%0]\n"
+    "strh %1, [%0]\n"
+    "strh %2, [%0]\n"
+    "nop; nop;"
+    :: "l"(REG_SC_MODE_REG_ADDR),
+       "l"(MODESWITCH_MAGIC),
+       "l"(0x100 | bankn)
+    : "memory");
+}
+
 void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_interface) {
   // Bit0: Controls SDRAM vs internal Flash mapping
   // Bit1: Controls whether the SD card interface is mapped into the ROM addresspace.
@@ -81,22 +133,24 @@ void set_supercard_mode(unsigned mapped_area, bool write_access, bool sdcard_int
 }
 
 
-#ifdef SUPERCARD_LITE
-  void enable_sc_flash() {
-    write_supercard_modereg(0x1510);
-  }
-  void disable_sc_flash() {
-    write_supercard_modereg(0);
-  }
-#else
-  void enable_sc_flash() {
+void enable_sc_flash() {
+  if (devtype == SupercardLite)
+    write_supercard_modereg(SUPERCARD_LITE_FLASHWR);
+  else
     set_supercard_mode(MAPPED_FIRMWARE, true, false);
-  }
-  void disable_sc_flash() {
+}
+void disable_sc_flash() {
+  if (devtype == SupercardLite)
+    write_supercard_modereg(0);
+  else
     set_supercard_mode(MAPPED_FIRMWARE, false, false);
-  }
-#endif
-
+}
+void sram_map_bank(unsigned bankn) {
+  if (devtype == Superchis)
+    set_superchis_bankreg(bankn);
+  else
+    set_supercard_mode(MAPPED_FIRMWARE, bankn != 0, false);
+}
 
 #define SLOT2_BASE_U16 ((volatile uint16_t*)(0x08000000))
 #define SLOT2_SRAM_U8  ((volatile uint8_t*)( 0x0A000000))
@@ -108,19 +162,19 @@ static unsigned test_sram() {
   // Just write the SRAM with some well-known data, and read it back
   REG_EXMEMCNT |= 0x3;   // Use the slowest possible access time.
 
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  sram_map_bank(0);
   for (unsigned i = 0; i < 64*1024; i++)
     SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0x5A;
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  sram_map_bank(1);
   for (unsigned i = 0; i < 64*1024; i++)
     SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0xA5;
 
   unsigned numerrs = 0;
-  set_supercard_mode(MAPPED_FIRMWARE, false, false);
+  sram_map_bank(0);
   for (unsigned i = 0; i < 64*1024; i++)
     if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0x5A) & 0xFF))
       numerrs++;
-  set_supercard_mode(MAPPED_FIRMWARE, true, false);
+  sram_map_bank(1);
   for (unsigned i = 0; i < 64*1024; i++)
     if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0xA5) & 0xFF))
       numerrs++;
@@ -146,6 +200,54 @@ static uint32_t flash_ident() {
 
   uint32_t ret = SLOT2_BASE_U16[addr_perm(0x000)] << 16;
   ret |= SLOT2_BASE_U16[addr_perm(0x001)];
+
+  for (unsigned i = 0; i < 32; i++)
+    SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+
+  disable_sc_flash();
+  sysSetCartOwner(pmode);
+
+  return ret;
+}
+
+static bool flash_cfi(t_flash_info *info) {
+  memset(info, 0, sizeof(*info));
+
+  // Map the GBA cart into the ARM9, enter flash mode with write enable.
+  bool pmode = sysGetCartOwner();
+  sysSetCartOwner(BUS_OWNER_ARM9);
+  enable_sc_flash();
+
+  REG_EXMEMCNT |= 0xF;  // use slow mode
+  for (unsigned i = 0; i < 32; i++)
+    SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
+
+  // Enter CFI mode and extract flash information
+  SLOT2_BASE_U16[addr_perm(0x555)] = 0x0098;
+  uint8_t qs[3] = {
+    SLOT2_BASE_U16[addr_perm(0x010)],
+    SLOT2_BASE_U16[addr_perm(0x011)],
+    SLOT2_BASE_U16[addr_perm(0x012)],
+  };
+  bool ret = (qs[0] == 'Q' && qs[1] == 'R' && qs[2] == 'Y');
+
+  if (ret) {
+    info->size = 1 << SLOT2_BASE_U16[addr_perm(0x027)];
+    info->blkwrite = (SLOT2_BASE_U16[addr_perm(0x02A)] & 0xFF);
+    info->blkwrite = (info->blkwrite ? (1 << info->blkwrite) : 0);
+
+    info->regioncnt = SLOT2_BASE_U16[addr_perm(0x02C)] & 0xFF;
+
+    for (unsigned i = 0; i < info->regioncnt; i++) {
+      unsigned baddr = 0x2D + i*4;
+      info->regions[i].blkcount = ((SLOT2_BASE_U16[addr_perm(baddr)] & 0xFF) |
+                                  ((SLOT2_BASE_U16[addr_perm(baddr + 1)] & 0xFF) << 8)) + 1;
+
+      unsigned bs = ((SLOT2_BASE_U16[addr_perm(baddr + 2)] & 0xFF) |
+                    ((SLOT2_BASE_U16[addr_perm(baddr + 3)] & 0xFF) << 8)) << 8;
+      info->regions[i].blksize = (bs ?: 128);
+    }
+  }
 
   for (unsigned i = 0; i < 32; i++)
     SLOT2_BASE_U16[0] = 0x00F0;            // Reset for a few cycles
@@ -202,7 +304,7 @@ static bool flash_erase() {
   SLOT2_BASE_U16[addr_perm(0x555)] = 0x0010; // Full chip erase!
 
   // Wait for the erase operation to finish. We rely on Q6 toggling:
-  for (unsigned i = 0; i < 60*1000; i++) {
+  for (unsigned i = 0; i < flash_erase_timeout[devtype]*1000; i++) {
     sleep_1ms();
     if (SLOT2_BASE_U16[0] == SLOT2_BASE_U16[0])
       break;
@@ -219,7 +321,7 @@ static bool flash_erase() {
 }
 
 // Checks that the erase operation actually erased the memory.
-static bool flash_erase_check(bool prot[128]) {
+static bool flash_erase_check(unsigned size) {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
@@ -227,16 +329,10 @@ static bool flash_erase_check(bool prot[128]) {
   REG_EXMEMCNT |= 0xF;  // use slow mode
 
   bool errf = false;
-  for (unsigned sa = 0; sa < 128; sa++) {
-    if (prot[sa])
-      continue;  // Protected sector, won't be clear.
-
-    for (unsigned i = 0; i < 4096; i+= 2) {
-      unsigned addr = sa * 4096 + i;
-      errf = (SLOT2_BASE_U16[addr / 2] != 0xFFFF);
-      if (errf)
-        break;
-    }
+  for (unsigned i = 0; i < size; i+= 2) {
+    errf = (SLOT2_BASE_U16[i / 2] != 0xFFFF);
+    if (errf)
+      break;
   }
 
   disable_sc_flash();
@@ -300,14 +396,14 @@ static bool flash_validate(const uint8_t *fwimg, unsigned fwsize) {
   sysSetCartOwner(pmode);
 }
 
-static bool flash_dump(const char *filename) {
+static bool flash_dump(const char *filename, unsigned size) {
   // Map the GBA cart into the ARM9, enter flash mode with write enable.
   bool pmode = sysGetCartOwner();
   sysSetCartOwner(BUS_OWNER_ARM9);
   enable_sc_flash();
 
-  char *data = (char*)malloc(512*1024);
-  memcpy(data, (void*)0x08000000, 512*1024);
+  char *data = (char*)malloc(size);
+  memcpy(data, (void*)0x08000000, size);
 
   disable_sc_flash();
   sysSetCartOwner(pmode);
@@ -318,7 +414,7 @@ static bool flash_dump(const char *filename) {
     return false;
   }
 
-  fwrite(data, 1, 512*1024, fd);
+  fwrite(data, 1, size, fd);
 
   fclose(fd);
   free(data);
@@ -349,44 +445,9 @@ static bool rom_dump(const char *filename) {
   return true;
 }
 
-const struct {
-  const char *fw_name;
-  uint8_t sha256[16];
-} known_images[] = {
-  {
-    "Empty/Zeroed",   // All 0x00
-    {0x07,0x85,0x4d,0x2f,0xef,0x29,0x7a,0x06,0xba,0x81,0x68,0x5e,0x66,0x0c,0x33,0x2d}
-  },
-  {
-    "Empty/Cleared",   // All 0xFF
-    {0x04,0x3e,0x23,0x8a,0x76,0x5f,0x7c,0xfb,0xc6,0x25,0x96,0xa5,0x0e,0x53,0xc8,0xff}
-  },
-  {
-    "Official firmware v1.85 (EN)",
-    {0x58,0xb0,0xd7,0xcf,0x24,0xa7,0x6a,0xed,0x79,0xa2,0x66,0xfc,0xa0,0x73,0x0b,0x5c}
-  },
-  {
-    "Official firmware (Lite) v1.85 (CN)",
-    {0xc5,0x19,0xf5,0xd4,0x6f,0xb4,0xee,0x1d,0xa1,0x87,0x13,0x48,0xab,0xeb,0x33,0xd2}
-  },
-  {
-    "Official firmware (Lite) v1.85 (EN)",
-    {0x6f,0xef,0xf0,0x6a,0xcf,0xcf,0x2d,0x94,0x36,0x3a,0x51,0x7c,0xd4,0x5e,0xfc,0x59}
-  },
-};
-
 char superfw_str[128];
 
 const char * firmware_ident() {
-  // Calculate the Firmware hash, attempt to identify it as a well-known firmware.
-  uint8_t hash[32];
-  sha256sum((uint8_t*)0x08000000, 512*1024, hash);
-
-  for (unsigned i = 0; i < sizeof(known_images)/sizeof(known_images[0]); i++) {
-    if (!memcmp(hash, known_images[i].sha256, sizeof(known_images[i].sha256)))
-      return known_images[i].fw_name;
-  }
-
   // Identify a valid SuperFW firmware.
   if (!memcmp((uint8_t*)0x080000F0, "SUPERFW~DAVIDGF", 16)) {
     unsigned version = *(uint32_t*)0x080000C4;
@@ -468,36 +529,15 @@ t_fs_entry *listdir(const char *path, int *nume) {
 void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
   consoleSelect(bots);
 
-  // Figure out how many unprotected sectors are there
-  bool prot[128] = {0};
-
-  #ifdef SUPERCARD_LITE
-    flash_prot_dump(prot);
-  #endif
-
-  unsigned ucnt = 0, ccnt = 0;
-  for (unsigned i = 0; i < 128; i++)
-    if (!prot[i])
-      ucnt++;
-  for (unsigned i = 0; i < 128; i++)
-    if (!prot[i])
-      ccnt++;
-    else
-      break;
-
-  printf("The flash has %d KiB of usable space (%d total unlocked blocks)\n", ccnt, ucnt);
+  printf("Assuming that the flash is %d KiBs in size\n", flash_fwsizes[devtype] >> 10);
 
   struct stat st;
   if (stat(path, &st)) {
     printf("Could not stat() the selected file (%s)\n", path);
     return;
   }
-  if (st.st_size > 512*1024) {
-    printf("The file is bigger than 512KiB!\n");
-    return;
-  }
-  if (st.st_size > ccnt*4096) {
-    printf("The file is bigger than %dKiB (maximum contiguous free space)!\n", ccnt*4096);
+  if (st.st_size > flash_fwsizes[devtype]) {
+    printf("The file is bigger than the assumed flash size!\n");
     return;
   }
 
@@ -560,9 +600,9 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
       }
       printf("\x1b[32;1mErase operation complete\x1b[37;1m\n");
 
-      printf("Verifying erase operation (%d sectors) ...\n", ucnt);
+      printf("Verifying erase operation (%d KiB) ...\n", flash_fwsizes[devtype] >> 10);
 
-      if (flash_erase_check(prot)) {
+      if (flash_erase_check(flash_fwsizes[devtype])) {
         printf("\x1b[31;1mErase validation failed!\x1b[37;1m\n");
         break;
       }
@@ -615,157 +655,203 @@ int main(int argc, char **argv) {
   printf("DLDI name:\n%s\n\n", io_dldi_data->friendlyName);
   printf("DSi mode: %d\n\n", isDSiMode());
 
-  unsigned menu_sel = 0;
   while (1) {
-    // Render menu
-    consoleSelect(&tops);
-    consoleClear();
-    printf("\x1b[36;1m");
-    printf("\x1b[1;5HSuperFW flashing tool");
-    printf("\x1b[37;1m");
 
-    printf("\x1b[5;1H %s Identify cart",  menu_sel == 0 ? ">" : " ");
-    printf("\x1b[7;1H %s Dump flash",     menu_sel == 1 ? ">" : " ");
-    printf("\x1b[9;1H %s Write flash",    menu_sel == 2 ? ">" : " ");
-    printf("\x1b[11;1H %s Dump ROM",      menu_sel == 3 ? ">" : " ");
-    printf("\x1b[13;1H %s Test SRAM",     menu_sel == 4 ? ">" : " ");
-    printf("\x1b[15;1H %s Protbits dump", menu_sel == 5 ? ">" : " ");
+    while (1) {
+      // Render simple dev sel menu
+      consoleSelect(&tops);
+      consoleClear();
+      printf("\x1b[36;1m");
+      printf("\x1b[1;5HSuperFW flashing tool");
+      printf("\x1b[37;1m");
+      printf("\x1b[5;1H Select device type");
+      printf("\x1b[9;3H < %s >", devnames[devtype]);
+      printf("\x1b[13;0H Select the right device type");
 
-    printf("\x1b[20;8H Version 0.6");
-    #ifdef SUPERCARD_LITE
-      printf("\x1b[22;6H SUPERCARD LITE");
-    #else
-      printf("\x1b[22;8H SUPERCARD SD");
-    #endif
+      unsigned keys = keysDown();
 
-    swiWaitForVBlank();
-    scanKeys();
+      if (keys & KEY_LEFT)
+        devtype = (devtype + MAXDEVICES - 1) % MAXDEVICES;
+      if (keys & KEY_RIGHT)
+        devtype = (devtype + 1) % MAXDEVICES;
 
-    if (keysDown() & KEY_A) {
-      switch (menu_sel) {
-      case 0:
-        consoleSelect(&bots);
-        printf("Identified flash device ID as %08lx\n", flash_ident());
-        {
-          const char *fwname = firmware_ident();
-          if (fwname)
-            printf("Identified the firmware as %s\n", fwname);
-          else {
-            if (!valid_header((uint8_t*)0x08000000))
-              printf("Invalid firmware header detected!\n");
-            else
-              printf("Unknown firmware detected!\n");
-          }
-        }
+      if (keys & KEY_A)
         break;
-      case 5:
-        {
-          bool prot[128];
-          consoleSelect(&bots);
-          flash_prot_dump(prot);
+      if (keys & KEY_START)
+        return 0;
 
-          for (unsigned i = 0; i < 128; i++)
-            printf("%d ", prot[i] ? 1 : 0);
-          printf("\n");
-        }
-        break;
-      case 4:
-        {
-          unsigned numerrs = test_sram();
-          consoleSelect(&bots);
-          if (numerrs)
-            printf("\x1b[31;1mSRAM check failed with %d diffs!\x1b[37;1m\n", numerrs);
-          else
-            printf("\x1b[32;1mSRAM integrity check passed!\x1b[37;1m\n");
-        }
-        break;
-      case 1:
-        consoleSelect(&bots);
-        printf("Starting dump ...\n");
-        if (!flash_dump("fat:/sc_flash_dump.bin"))
-          printf("Failed!\n");
-        else
-          printf("Dump complete! File written: sc_flash_dump.bin\n");
-        break;
-      case 3:
-        consoleSelect(&bots);
-        printf("Starting dump ...\n");
-        if (!rom_dump("fat:/sc_rom_dump.bin"))
-          printf("Failed!\n");
-        else
-          printf("Dump complete! File written: sc_rom_dump.bin\n");
-        break;
-      case 2:
-        // Present a small file browser or something.
-        char curpath[PATH_MAX] = "fat:/";
-        int cur_entry = 0, top_entry = 0;
-        int num_entries;
-        t_fs_entry * l = listdir(curpath, &num_entries);
-
-        while (1) {
-          swiWaitForVBlank();
-          scanKeys();
-
-          if (keysDown() & KEY_B)
-            break;
-          if (keysDown() & KEY_A) {
-            if (l[cur_entry].fn[0]) {
-              char tmp[PATH_MAX];
-              strcpy(tmp, curpath);
-              strcat(tmp, "/");
-              strcat(tmp, l[cur_entry].fn);
-
-              if (l[cur_entry].fn[strlen(l[cur_entry].fn)-1] == '/') {
-                // Is a directory, go down the rabbit hole
-                realpath(tmp, curpath);  // Simplify the path (like "//" or "/../")
-
-                top_entry = cur_entry = 0;
-                free(l);
-                l = listdir(curpath, &num_entries);
-              }
-              else {
-                select_image(tmp, &tops, &bots);
-                break; //  Go back
-              }
-            }
-          }
-
-          if (keysDown() & KEY_DOWN)
-            cur_entry = MIN(num_entries - 1, cur_entry + 1);
-          if (keysDown() & KEY_UP)
-            cur_entry = MAX(0, cur_entry - 1);
-          if (keysDown() & KEY_RIGHT)
-            cur_entry = MIN(cur_entry + 8, num_entries - 1);
-          if (keysDown() & KEY_LEFT)
-            cur_entry = MAX(0, cur_entry - 8);
-
-          if (cur_entry - top_entry >= 8)
-            top_entry = cur_entry - 7;
-          if (cur_entry < top_entry)
-            top_entry = cur_entry;
-
-          // Render path list
-          consoleSelect(&tops);
-          consoleClear();
-          printf("\x1b[1;5HSuperFW flashing tool");
-
-          for (unsigned i = 0; i < 8; i++) {
-            if (!l[top_entry + i].fn[0])
-              break;
-            printf("\x1b[%d;1H %s %.28s", 5 + i*2, i + top_entry == cur_entry ? ">" : " ", l[top_entry + i].fn);
-          }
-        }
-        free(l);
-        break;
-      };
+      swiWaitForVBlank();
+      scanKeys();
     }
 
-    if (keysDown() & KEY_START)
-      break;
-    if (keysDown() & KEY_DOWN)
-      menu_sel = (menu_sel + 1) % 6;
-    if (keysDown() & KEY_UP)
-      menu_sel = (menu_sel + 5) % 6;
+    if (devtype == Superchis)
+      reset_superchis_flashmap();
+
+    unsigned menu_sel = 0;
+    while (1) {
+      // Render menu
+      consoleSelect(&tops);
+      consoleClear();
+      printf("\x1b[36;1m");
+      printf("\x1b[1;5HSuperFW flashing tool");
+      printf("\x1b[37;1m");
+
+      printf("\x1b[5;1H %s Identify cart",  menu_sel == 0 ? ">" : " ");
+      printf("\x1b[7;1H %s Dump flash",     menu_sel == 1 ? ">" : " ");
+      printf("\x1b[9;1H %s Write flash",    menu_sel == 2 ? ">" : " ");
+      printf("\x1b[11;1H %s Dump ROM",      menu_sel == 3 ? ">" : " ");
+      printf("\x1b[13;1H %s Test SRAM",     menu_sel == 4 ? ">" : " ");
+      if (devtype == SupercardLite)
+        printf("\x1b[15;1H %s Protbits dump", menu_sel == 5 ? ">" : " ");
+
+      printf("\x1b[20;8H Version 0.7");
+      printf("\x1b[22;6H %s", devnames[devtype]);
+
+      swiWaitForVBlank();
+      scanKeys();
+      unsigned keys = keysDown();
+
+      if (keys & KEY_A) {
+        switch (menu_sel) {
+        case 0:
+          consoleSelect(&bots);
+          printf("Identified flash device ID as %08lx\n", flash_ident());
+          {
+            const char *fwname = firmware_ident();
+            if (fwname)
+              printf("Identified the firmware as %s\n", fwname);
+            else {
+              if (!valid_header((uint8_t*)0x08000000))
+                printf("Invalid firmware header detected!\n");
+              else
+                printf("Unknown firmware detected!\n");
+            }
+
+            t_flash_info info;
+            if (!flash_cfi(&info))
+              printf("Flash does not support CFI\n");
+            else {
+              printf("Size: %lu bytes\n", info.size);
+              printf("Write buffer size: %lu bytes\n", info.blkwrite);
+              printf("Has %lu erase sections\n", info.regioncnt);
+              for (unsigned i = 0; i < info.regioncnt; i++)
+                printf("S%u cnt: %lu size: %lu\n", i, info.regions[i].blkcount, info.regions[i].blksize);
+            }
+          }
+          break;
+        case 5:
+          {
+            bool prot[128];
+            consoleSelect(&bots);
+            flash_prot_dump(prot);
+
+            for (unsigned i = 0; i < 128; i++)
+              printf("%d ", prot[i] ? 1 : 0);
+            printf("\n");
+          }
+          break;
+        case 4:
+          {
+            unsigned numerrs = test_sram();
+            consoleSelect(&bots);
+            if (numerrs)
+              printf("\x1b[31;1mSRAM check failed with %d diffs!\x1b[37;1m\n", numerrs);
+            else
+              printf("\x1b[32;1mSRAM integrity check passed!\x1b[37;1m\n");
+          }
+          break;
+        case 1:
+          consoleSelect(&bots);
+          printf("Starting dump (%d KiB)...\n", flash_fwsizes[devtype] >> 10);
+          if (!flash_dump("fat:/sc_flash_dump.bin", flash_fwsizes[devtype]))
+            printf("Failed!\n");
+          else
+            printf("Dump complete! File written: sc_flash_dump.bin\n");
+          break;
+        case 3:
+          consoleSelect(&bots);
+          printf("Starting dump ...\n");
+          if (!rom_dump("fat:/sc_rom_dump.bin"))
+            printf("Failed!\n");
+          else
+            printf("Dump complete! File written: sc_rom_dump.bin\n");
+          break;
+        case 2:
+          // Present a small file browser or something.
+          char curpath[PATH_MAX] = "fat:/";
+          int cur_entry = 0, top_entry = 0;
+          int num_entries;
+          t_fs_entry * l = listdir(curpath, &num_entries);
+
+          while (1) {
+            swiWaitForVBlank();
+            scanKeys();
+            unsigned keys = keysDown();
+
+            if (keys & KEY_B)
+              break;
+            if (keys & KEY_A) {
+              if (l[cur_entry].fn[0]) {
+                char tmp[PATH_MAX];
+                strcpy(tmp, curpath);
+                strcat(tmp, "/");
+                strcat(tmp, l[cur_entry].fn);
+
+                if (l[cur_entry].fn[strlen(l[cur_entry].fn)-1] == '/') {
+                  // Is a directory, go down the rabbit hole
+                  realpath(tmp, curpath);  // Simplify the path (like "//" or "/../")
+
+                  top_entry = cur_entry = 0;
+                  free(l);
+                  l = listdir(curpath, &num_entries);
+                }
+                else {
+                  select_image(tmp, &tops, &bots);
+                  break; //  Go back
+                }
+              }
+            }
+
+            if (keys & KEY_DOWN)
+              cur_entry = MIN(num_entries - 1, cur_entry + 1);
+            if (keys & KEY_UP)
+              cur_entry = MAX(0, cur_entry - 1);
+            if (keys & KEY_RIGHT)
+              cur_entry = MIN(cur_entry + 8, num_entries - 1);
+            if (keys & KEY_LEFT)
+              cur_entry = MAX(0, cur_entry - 8);
+
+            if (cur_entry - top_entry >= 8)
+              top_entry = cur_entry - 7;
+            if (cur_entry < top_entry)
+              top_entry = cur_entry;
+
+            // Render path list
+            consoleSelect(&tops);
+            consoleClear();
+            printf("\x1b[1;5HSuperFW flashing tool");
+
+            for (unsigned i = 0; i < 8; i++) {
+              if (!l[top_entry + i].fn[0])
+                break;
+              printf("\x1b[%d;1H %s %.28s", 5 + i*2, i + top_entry == cur_entry ? ">" : " ", l[top_entry + i].fn);
+            }
+          }
+          free(l);
+          break;
+        };
+      }
+
+      if (keys & KEY_B)
+        break;
+
+      const uint8_t maxopt[3] = { 5, 6, 5 };
+
+      if (keys & KEY_DOWN)
+        menu_sel = (menu_sel + 1) % maxopt[devtype];
+      if (keys & KEY_UP)
+        menu_sel = (menu_sel + maxopt[devtype] - 1) % maxopt[devtype];
+    }
   }
 
   return 0;

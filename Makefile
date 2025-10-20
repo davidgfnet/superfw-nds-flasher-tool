@@ -4,21 +4,9 @@
 
 BLOCKSDS        ?= /opt/blocksds/core
 
-# Target config
-# BOARD can be "sd" or "lite"
-BOARD ?= sd
-
-ifeq ($(BOARD),lite)
-  DEFINES ?= -DSUPERCARD_LITE
-else ifeq ($(BOARD),sd)
-  # No need for extra flags
-else
-  $(error No valid board specified in BOARD)
-endif
-
 # User config
 
-NAME            := superfw-flasher-$(BOARD)
+NAME            := superfw-flasher
 GAME_TITLE      := SuperFW flashing tool
 GAME_SUBTITLE   := davidgf
 GAME_AUTHOR	    ?= davidgf.net
