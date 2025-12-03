@@ -103,7 +103,7 @@ void reset_superchis_flashmap() {
       "nop; nop;"
       :: "l"(REG_SC_MODE_REG_ADDR),
          "l"(MODESWITCH_MAGIC),
-         "l"(0x200)
+         "l"(0x100)
       : "memory");
   }
 }
@@ -119,7 +119,7 @@ void set_superchis_bankreg(unsigned bankn) {
     "nop; nop;"
     :: "l"(REG_SC_MODE_REG_ADDR),
        "l"(MODESWITCH_MAGIC),
-       "l"(0x100 | bankn)
+       "l"(0x70 | ((bankn & 1) << 3))
     : "memory");
 }
 
@@ -162,22 +162,19 @@ static unsigned test_sram() {
   // Just write the SRAM with some well-known data, and read it back
   REG_EXMEMCNT |= 0x3;   // Use the slowest possible access time.
 
-  sram_map_bank(0);
-  for (unsigned i = 0; i < 64*1024; i++)
-    SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0x5A;
-  sram_map_bank(1);
-  for (unsigned i = 0; i < 64*1024; i++)
-    SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0xA5;
+  for (unsigned bank = 0; bank < 2; bank++) {
+    sram_map_bank(bank);
+    for (unsigned i = 0; i < 64*1024; i++)
+      SLOT2_SRAM_U8[i] = i ^ (i * i) ^ 0x5A ^ bank;
+  }
 
   unsigned numerrs = 0;
-  sram_map_bank(0);
-  for (unsigned i = 0; i < 64*1024; i++)
-    if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0x5A) & 0xFF))
-      numerrs++;
-  sram_map_bank(1);
-  for (unsigned i = 0; i < 64*1024; i++)
-    if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0xA5) & 0xFF))
-      numerrs++;
+  for (unsigned bank = 0; bank < 2; bank++) {
+    sram_map_bank(bank);
+    for (unsigned i = 0; i < 64*1024; i++)
+      if (SLOT2_SRAM_U8[i] != ((i ^ (i * i) ^ 0x5A ^ bank) & 0xFF))
+        numerrs++;
+  }
 
   set_supercard_mode(MAPPED_FIRMWARE, false, false);
   sysSetCartOwner(pmode);
