@@ -387,10 +387,11 @@ static bool flash_validate(const uint8_t *fwimg, unsigned fwsize) {
   sysSetCartOwner(BUS_OWNER_ARM9);
   enable_sc_flash();
 
-  return (!memcmp(fwimg, (uint8_t*)0x08000000, fwsize));
+  bool ret = (!memcmp(fwimg, (uint8_t*)0x08000000, fwsize));
 
   disable_sc_flash();
   sysSetCartOwner(pmode);
+  return ret;
 }
 
 static bool flash_dump(const char *filename, unsigned size) {
@@ -445,10 +446,20 @@ static bool rom_dump(const char *filename) {
 char superfw_str[128];
 
 const char * firmware_ident() {
+  bool pmode = sysGetCartOwner();
+  sysSetCartOwner(BUS_OWNER_ARM9);
+  enable_sc_flash();
+
+  uint8_t hdr[0x100];
+  memcpy(hdr, (const void*)0x08000000, sizeof(hdr));
+
+  sysSetCartOwner(pmode);
+
   // Identify a valid SuperFW firmware.
-  if (!memcmp((uint8_t*)0x080000F0, "SUPERFW~DAVIDGF", 16)) {
-    unsigned version = *(uint32_t*)0x080000C4;
-    unsigned commtid = *(uint32_t*)0x080000C8;
+  if (!memcmp(&hdr[0xF0], "SUPERFW~DAVIDGF", 16)) {
+    unsigned version, commtid;
+    memcpy(&version, &hdr[0xC4], 4);
+    memcpy(&commtid, &hdr[0xC8], 4);
     snprintf(superfw_str, sizeof(superfw_str), "SuperFW version %u.%u (%08x)",
              (version >> 16), (version & 0xFFFF), commtid);
     return superfw_str;
@@ -590,7 +601,7 @@ void select_image(const char *path, PrintConsole *tops, PrintConsole *bots) {
 
     if ((keysHeld() & (KEY_L|KEY_R|KEY_A)) == (KEY_L|KEY_R|KEY_A)) {
       consoleSelect(bots);
-      printf("Erasing flash chip ...\n");
+      printf("Erasing flash chip (this can take a long time!) ...\n");
       if (!flash_erase()) {
         printf("\x1b[31;1mErase failed!\x1b[37;1m\n");
         break;
