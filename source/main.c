@@ -508,24 +508,27 @@ t_fs_entry *listdir(const char *path, int *nume) {
   ret[0].fn[0] = 0;
 
   DIR *dirp = opendir(path);
-  while (1) {
-    struct dirent *cur = readdir(dirp);
-    if (!cur || !cur->d_name[0])
-      break;
-    if (cur->d_name[0] == '.' && !cur->d_name[1])
-      continue;
+  if (dirp) {
+    while (1) {
+      struct dirent *cur = readdir(dirp);
+      if (!cur || !cur->d_name[0])
+        break;
+      if (cur->d_name[0] == '.' && !cur->d_name[1])
+        continue;
 
-    strcpy(ret[nument].fn, cur->d_name);
-    ret[nument].isdir = cur->d_type == DT_DIR;
-    if (cur->d_type == DT_DIR)
-      strcat(ret[nument].fn, "/");
-    nument++;
+      strcpy(ret[nument].fn, cur->d_name);
+      ret[nument].isdir = cur->d_type == DT_DIR;
+      if (cur->d_type == DT_DIR)
+        strcat(ret[nument].fn, "/");
+      nument++;
 
-    if (nument >= cap) {
-      cap += 8;
-      ret = (t_fs_entry*)realloc(ret, cap * sizeof(t_fs_entry));
+      if (nument >= cap) {
+        cap += 8;
+        ret = (t_fs_entry*)realloc(ret, cap * sizeof(t_fs_entry));
+      }
+      ret[nument].fn[0] = 0;
     }
-    ret[nument].fn[0] = 0;
+    closedir(dirp);
   }
 
   qsort(ret, nument, sizeof(t_fs_entry), fncomp);
@@ -821,11 +824,11 @@ int main(int argc, char **argv) {
             }
 
             if (keys & KEY_DOWN)
-              cur_entry = MIN(num_entries - 1, cur_entry + 1);
+              cur_entry = MAX(0, MIN(num_entries - 1, cur_entry + 1));
             if (keys & KEY_UP)
               cur_entry = MAX(0, cur_entry - 1);
             if (keys & KEY_RIGHT)
-              cur_entry = MIN(cur_entry + 8, num_entries - 1);
+              cur_entry = MAX(0, MIN(cur_entry + 8, num_entries - 1));
             if (keys & KEY_LEFT)
               cur_entry = MAX(0, cur_entry - 8);
 
