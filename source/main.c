@@ -715,7 +715,7 @@ int main(int argc, char **argv) {
       if (devtype == SupercardLite)
         printf("\x1b[15;1H %s Protbits dump", menu_sel == 5 ? ">" : " ");
 
-      printf("\x1b[20;8H Version 0.7");
+      printf("\x1b[20;8H Version 0.9");
       printf("\x1b[22;6H %s", devnames[devtype]);
 
       swiWaitForVBlank();
